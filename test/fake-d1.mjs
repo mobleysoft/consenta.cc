@@ -5,9 +5,14 @@
 
 export function fakeD1() {
   const suppressions = [];
+  const consents = [];
 
   function findRow(identifier, channel) {
     return suppressions.find((s) => s.identifier === identifier && s.channel === channel) || null;
+  }
+
+  function findConsent(identifier, scope) {
+    return consents.find((c) => c.identifier === identifier && c.scope === scope) || null;
   }
 
   const db = {
@@ -26,12 +31,26 @@ export function fakeD1() {
                   suppressions.push({ id, identifier, channel, source_venture, reason, recorded_at });
                 }
               }
+              if (sql.startsWith('INSERT INTO consents')) {
+                const [id, identifier, scope, granted, source_venture, recorded_at] = args;
+                const existing = findConsent(identifier, scope);
+                if (existing) {
+                  // ON CONFLICT(identifier, scope) DO UPDATE
+                  Object.assign(existing, { granted, source_venture, recorded_at });
+                } else {
+                  consents.push({ id, identifier, scope, granted, source_venture, recorded_at });
+                }
+              }
               return { success: true };
             },
             async first() {
               if (sql.startsWith('SELECT identifier, channel, source_venture, reason, recorded_at FROM suppressions')) {
                 const [identifier, channel] = args;
                 return findRow(identifier, channel);
+              }
+              if (sql.startsWith('SELECT identifier, scope, granted, source_venture, recorded_at FROM consents')) {
+                const [identifier, scope] = args;
+                return findConsent(identifier, scope);
               }
               return null;
             },
@@ -44,5 +63,5 @@ export function fakeD1() {
     },
   };
 
-  return { CONSENTA_DB: db, _suppressions: suppressions };
+  return { CONSENTA_DB: db, _suppressions: suppressions, _consents: consents };
 }

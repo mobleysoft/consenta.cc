@@ -2,14 +2,16 @@ name = "consenta-cc-worker"
 main = "worker.js"
 compatibility_date = "2024-05-12"
 
-# Narrow, additive route: owns only /api/v1/suppressions* on the
-# consenta.cc zone. The zone's existing catch-all route
+# Narrow, additive routes: owns only /api/v1/suppressions*, /api/v1/consent*,
+# and /consent* on the consenta.cc zone. The zone's existing catch-all route
 # (consenta.cc/* -> mobley-venture-fleet-a) is untouched and keeps serving
 # everything else (confirmed via the Workers Routes API, 2026-09-11) -
 # Cloudflare matches the more specific route first, so this is additive,
 # not a reassignment of the domain.
 routes = [
-  { pattern = "consenta.cc/api/v1/suppressions*", zone_name = "consenta.cc" }
+  { pattern = "consenta.cc/api/v1/suppressions*", zone_name = "consenta.cc" },
+  { pattern = "consenta.cc/api/v1/consent*", zone_name = "consenta.cc" },
+  { pattern = "consenta.cc/consent*", zone_name = "consenta.cc" }
 ]
 
 [[d1_databases]]
