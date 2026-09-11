@@ -1,0 +1,8 @@
+{
+  "name": "consenta-cc-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test modules/*.test.mjs worker.test.mjs"
+  }
+}
