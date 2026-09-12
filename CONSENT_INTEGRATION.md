@@ -30,31 +30,58 @@ real `granted: true` row makes it return `true`.
   `return_url` (if provided) with `?consent=granted` or `?consent=declined`
   appended.
 
-## Intended integration point (NOT built in this task)
+## Integration point: BUILT 2026-09-12 (was "not built in this task" above, as of 2026-09-11)
 
-AuthFor's ephemeral-invite/magic-link claim flow (in-progress, separate
-repo: `/Users/johnmobley/authfor.com`) is the natural moment a real person
-first shows up with an identifier attached to a specific venture — exactly
-when this consent question should be asked, before their info is treated as
-shareable across the conglomerate.
+Built as part of the conglomerate-wide-trial-invite-emails capability
+(`mascom/flagged_next_steps_backlog.json`), which needed exactly this
+integration point plus a real trial-entitlement ledger. Rather than
+modifying AuthFor's own claim flow to redirect through `/consent` (the
+originally-sketched design above), the actual real flow puts consenta.cc
+itself directly in the claim path: the pitch email's claim link points at
+consenta.cc's own new `GET /claim` (not directly at AuthFor), so the
+consent question and the trial-activation moment happen together in the
+same request — see `migrations/0003_trials.sql`, `modules/trials-store.js`,
+and `worker.js`'s `/api/v1/trials*` and `/claim` routes.
 
-The intended real flow, once AuthFor's side is ready:
+The real flow, live today:
 
-1. A person clicks an ephemeral invite / magic link for venture X.
-2. Before AuthFor completes the claim, it redirects to
-   `consenta.cc/consent?identifier=<their identifier>&source_venture=X&return_url=<AuthFor's claim-completion URL>`.
-3. They see the real consent notice above and pick Allow or Decline.
-4. consenta.cc records the decision via `POST /api/v1/consent` and redirects
-   back to AuthFor's `return_url` (with `?consent=granted|declined`
-   appended), which then completes the claim.
-5. Any venture that later wants to know if it's allowed to treat that
-   identifier's info as shareable calls
-   `GET /api/v1/consent/check?identifier=&scope=cross_venture_data_sharing`
-   and treats anything other than `consented: true` as "not consented" —
-   fail-closed, same as this file's endpoints already guarantee.
+1. A person clicks the claim link in a real pitch email
+   (`mascom/trial-invite-batch.mjs` composes it) - the link is
+   `consenta.cc/claim?token=<AuthFor ephemeral invite token>&return_to=<venture's own real page>`.
+2. `GET /claim` first calls AuthFor's real `POST /api/v1/ephemeral/verify`
+   server-side to confirm the token is genuine and unexpired - never
+   trusts the URL alone. An invalid/expired token gets a real error page,
+   not a claim form.
+3. It looks up the matching `trial_entitlements` row (created earlier by
+   the batch script via `POST /api/v1/trials`, status `pending`). If
+   already claimed (not `pending`), skips straight to a "continue to your
+   trial" link instead of asking consent twice.
+4. Otherwise renders the real consent+claim question (same fail-closed
+   `cross_venture_data_sharing` scope as `/consent` above - not a second,
+   divergent mechanism). Allow/Decline both POST to
+   `/api/v1/trials/:token/claim`.
+5. That endpoint atomically (a) records the real consent decision via the
+   same `recordConsent()` this file's `/consent` route uses, and (b) calls
+   `activateTrial()` - THIS is the real claim moment: the trial's
+   clock/counter starts here, not when the invite was created or the email
+   was sent. Idempotent - re-visiting an already-claimed link does not
+   reset the trial.
+6. The browser is redirected to `return_to` with `?trial_token=<token>`
+   appended. weylandai.com's own landing page (`index.html`) was extended
+   to honor this - see that repo's `ephemeralToken()` - so the visitor
+   resumes AS the identity-bound invited session (not a fresh anonymous
+   one), and `requireProductAccess()` (`src/lib/auth.js`) now calls this
+   worker's `/api/v1/trials/:token/consume` to enforce the real
+   payload/time limit for any ephemeral session that has one, closing a
+   gap that file's own comments had documented as deliberately unmetered.
 
-This task's job was only to make consenta.cc's own side of that contract
-real and live — the endpoints above are deployed and verified today. Wiring
-AuthFor's claim step to actually redirect through `/consent` is separate,
-still-in-progress work in `authfor.com` and is intentionally not touched
-here.
+`GET /api/v1/consent/check?identifier=&scope=cross_venture_data_sharing`
+remains the real, unchanged, fail-closed way any venture checks whether an
+identifier's info is shareable - untouched by this integration.
+
+Full request-level verification (real curl round-trips against production,
+not assumed) is recorded in this session's report; see
+`mascom/flagged_next_steps_backlog.json`'s `conglomerate-wide-trial-invite-emails`
+entry for the current end-to-end status and what's still blocked (a real
+send requires `MAILGUY_API_KEY` in the environment, not present as of this
+writing).

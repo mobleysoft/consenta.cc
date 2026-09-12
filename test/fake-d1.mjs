@@ -6,6 +6,7 @@
 export function fakeD1() {
   const suppressions = [];
   const consents = [];
+  const trials = [];
 
   function findRow(identifier, channel) {
     return suppressions.find((s) => s.identifier === identifier && s.channel === channel) || null;
@@ -13,6 +14,10 @@ export function fakeD1() {
 
   function findConsent(identifier, scope) {
     return consents.find((c) => c.identifier === identifier && c.scope === scope) || null;
+  }
+
+  function findTrial(id) {
+    return trials.find((t) => t.id === id) || null;
   }
 
   const db = {
@@ -41,6 +46,28 @@ export function fakeD1() {
                   consents.push({ id, identifier, scope, granted, source_venture, recorded_at });
                 }
               }
+              if (sql.startsWith('INSERT INTO trial_entitlements')) {
+                const [id, identifier, venture, product, limit_type, limit_value, remaining_value, source_venture, created_at] = args;
+                trials.push({
+                  id, identifier, venture, product, limit_type, limit_value, remaining_value,
+                  status: 'pending', activated_at: null, expires_at: null, source_venture, created_at,
+                });
+              }
+              if (sql.startsWith("UPDATE trial_entitlements SET status = 'active'")) {
+                const [activated_at, expires_at, id] = args;
+                const t = findTrial(id);
+                if (t) Object.assign(t, { status: 'active', activated_at, expires_at });
+              }
+              if (sql.startsWith("UPDATE trial_entitlements SET status = 'expired'")) {
+                const [id] = args;
+                const t = findTrial(id);
+                if (t) t.status = 'expired';
+              }
+              if (sql.startsWith('UPDATE trial_entitlements SET remaining_value')) {
+                const [remaining_value, status, id] = args;
+                const t = findTrial(id);
+                if (t) Object.assign(t, { remaining_value, status });
+              }
               return { success: true };
             },
             async first() {
@@ -51,6 +78,10 @@ export function fakeD1() {
               if (sql.startsWith('SELECT identifier, scope, granted, source_venture, recorded_at FROM consents')) {
                 const [identifier, scope] = args;
                 return findConsent(identifier, scope);
+              }
+              if (sql.includes('FROM trial_entitlements')) {
+                const [id] = args;
+                return findTrial(id);
               }
               return null;
             },
@@ -63,5 +94,5 @@ export function fakeD1() {
     },
   };
 
-  return { CONSENTA_DB: db, _suppressions: suppressions, _consents: consents };
+  return { CONSENTA_DB: db, _suppressions: suppressions, _consents: consents, _trials: trials };
 }

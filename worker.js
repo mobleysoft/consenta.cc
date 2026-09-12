@@ -47,6 +47,7 @@
 
 import { recordSuppression, checkSuppression, isValidChannel, normalizeIdentifier } from './modules/suppressions-store.js';
 import { recordConsent, checkConsent, isValidScope, normalizeIdentifier as normalizeConsentIdentifier } from './modules/consents-store.js';
+import { createTrial, getTrial, activateTrial, consumeTrial, isValidLimitType } from './modules/trials-store.js';
 
 const CONSENT_SCOPE = 'cross_venture_data_sharing';
 
@@ -153,6 +154,140 @@ function consentPageErrorHtml(message) {
 <body style="font-family: -apple-system, sans-serif; max-width: 560px; margin: 10vh auto; padding: 0 24px;">
   <h1>Missing information</h1>
   <p>${escapeHtml(message)}</p>
+</body>
+</html>`;
+}
+
+// --- Trial claim page ---
+//
+// The real "claim the profile and start using the trial" moment: a person
+// clicks the magic-link claim button in a pitch email (sent via
+// mailguyai.com, see mascom/trial-invite-batch.mjs), lands here first
+// (not directly at the venture or at AuthFor), and this page:
+//   1. confirms the AuthFor ephemeral invite token is still real/unexpired
+//      (a live server-side call to AuthFor - never trust the URL alone),
+//   2. asks the one real consent question (same fail-closed
+//      cross_venture_data_sharing scope as /consent above - not a second,
+//      divergent consent mechanism), and
+//   3. on submit, activates the trial_entitlements row for this token -
+//      this is the CLAIM moment per John's own wording ("start using the
+//      trial"), not send time and not invite-creation time.
+// A trial already claimed before (status != 'pending') skips straight to
+// "continue to your trial" - asking the same consent question twice on a
+// repeat visit would be a real UX bug, not required correctness.
+function claimPageHtml({ token, trial, returnTo }) {
+  const safeVenture = escapeHtml(trial.venture);
+  const safeProduct = escapeHtml(trial.product);
+  const limitLabel = trial.limit_type === 'payloads'
+    ? `${trial.limit_value} payload${trial.limit_value === 1 ? '' : 's'}`
+    : `${Math.round(trial.limit_value / 3600)} hour${Math.round(trial.limit_value / 3600) === 1 ? '' : 's'}`;
+  const tokenJson = JSON.stringify(token);
+  const returnToJson = JSON.stringify(returnTo || '');
+  const identifierJson = JSON.stringify(trial.identifier);
+  const ventureJson = JSON.stringify(trial.venture);
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claim your trial — consenta.cc</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 560px; margin: 10vh auto; padding: 0 24px; color: #1a1a1a; line-height: 1.5; }
+  h1 { font-size: 1.35rem; }
+  p { color: #333; }
+  .identifier { font-family: ui-monospace, Menlo, monospace; background: #f2f2f2; padding: 2px 6px; border-radius: 4px; }
+  .buttons { display: flex; gap: 12px; margin-top: 28px; }
+  button { flex: 1; padding: 14px 16px; font-size: 1rem; border-radius: 8px; border: 1px solid #ccc; cursor: pointer; }
+  #allow { background: #111; color: #fff; border-color: #111; }
+  #decline { background: #fff; color: #111; }
+  button:disabled { opacity: 0.6; cursor: default; }
+  .fineprint { margin-top: 20px; font-size: 0.85rem; color: #666; }
+  #status { margin-top: 20px; font-weight: 600; }
+</style>
+</head>
+<body>
+  <h1>Claim your ${safeProduct} trial</h1>
+  <p>
+    You've been invited to try <strong>${safeProduct}</strong> from
+    <strong>${safeVenture}</strong> — your trial covers
+    <strong>${escapeHtml(limitLabel)}</strong>, starting the moment you
+    claim it below (not from whenever this email was sent).
+  </p>
+  <p>
+    Before we activate it: <span class="identifier">${escapeHtml(trial.identifier)}</span>
+    was given to ${safeVenture} for this invite. consenta.cc is the one
+    place in this group of companies that actually asks before that info
+    is kept and shared with any of our other ventures. If you choose
+    <strong>Allow</strong>, your info may be shared with and retained by
+    other Mobleysoft/MobCorp ventures. If you choose <strong>Decline</strong>,
+    it stays only with ${safeVenture} — either way, your trial activates.
+  </p>
+  <div class="buttons">
+    <button id="decline" type="button">Decline &amp; claim trial</button>
+    <button id="allow" type="button">Allow &amp; claim trial</button>
+  </div>
+  <div id="status"></div>
+  <p class="fineprint">No record of a decision means your info is treated as NOT consented for sharing, by default.</p>
+<script>
+(function () {
+  var token = ${tokenJson};
+  var returnTo = ${returnToJson};
+  var identifier = ${identifierJson};
+  var venture = ${ventureJson};
+  var allowBtn = document.getElementById('allow');
+  var declineBtn = document.getElementById('decline');
+  var statusEl = document.getElementById('status');
+
+  function submit(granted) {
+    allowBtn.disabled = true;
+    declineBtn.disabled = true;
+    statusEl.textContent = 'Activating your trial...';
+    fetch('/api/v1/trials/' + encodeURIComponent(token) + '/claim', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ granted: granted }),
+    })
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (!data || !data.trial) {
+          statusEl.textContent = 'Something went wrong activating your trial. Please try again.';
+          allowBtn.disabled = false;
+          declineBtn.disabled = false;
+          return;
+        }
+        statusEl.textContent = 'Your trial is active. Redirecting you to ' + venture + '...';
+        if (returnTo) {
+          var url = new URL(returnTo);
+          url.searchParams.set('trial_token', token);
+          window.location.href = url.toString();
+        }
+      })
+      .catch(function () {
+        statusEl.textContent = 'Something went wrong activating your trial. Please try again.';
+        allowBtn.disabled = false;
+        declineBtn.disabled = false;
+      });
+  }
+
+  allowBtn.addEventListener('click', function () { submit(true); });
+  declineBtn.addEventListener('click', function () { submit(false); });
+})();
+</script>
+</body>
+</html>`;
+}
+
+function claimAlreadyActiveHtml({ trial, returnTo }) {
+  const safeVenture = escapeHtml(trial.venture);
+  const safeProduct = escapeHtml(trial.product);
+  const url = returnTo ? (() => { const u = new URL(returnTo); u.searchParams.set('trial_token', trial.id); return u.toString(); })() : null;
+  return `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Continue your trial — consenta.cc</title></head>
+<body style="font-family: -apple-system, sans-serif; max-width: 560px; margin: 10vh auto; padding: 0 24px;">
+  <h1>Your ${safeProduct} trial is already active</h1>
+  <p>Status: <strong>${escapeHtml(trial.status)}</strong>${trial.limit_type === 'payloads' ? ` — ${trial.remaining_value} payload(s) remaining` : ''}.</p>
+  ${url ? `<p><a href="${escapeHtml(url)}">Continue to ${safeVenture}</a></p>` : `<p>Return to ${safeVenture} to continue.</p>`}
 </body>
 </html>`;
 }
@@ -275,6 +410,153 @@ export default {
         reason: result.reason,
         ...(result.reason !== 'no_record' ? { source_venture: result.source_venture, recorded_at: result.recorded_at } : {}),
       });
+    }
+
+    // POST /api/v1/trials - create a real, pending trial entitlement for
+    // an AuthFor ephemeral-invite token. Called by whichever venture/batch
+    // process created the invite (e.g. mascom/trial-invite-batch.mjs),
+    // right after a successful POST to AuthFor's /api/v1/ephemeral/invite -
+    // `invite_token` here is that call's returned `token`, unchanged.
+    if (method === 'POST' && pathname === '/api/v1/trials') {
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return err('Invalid JSON body', 'INVALID_INPUT');
+      }
+      const { invite_token: inviteToken, identifier, venture, product, trial_limit: trialLimit, source_venture: sourceVenture } = body || {};
+      if (!inviteToken) return err('Required: invite_token', 'INVALID_INPUT');
+      if (!identifier) return err('Required: identifier', 'INVALID_INPUT');
+      if (!venture) return err('Required: venture', 'INVALID_INPUT');
+      if (!product) return err('Required: product', 'INVALID_INPUT');
+      if (!trialLimit || !isValidLimitType(trialLimit.type)) {
+        return err("Required: trial_limit.type must be 'payloads' or 'time'", 'INVALID_INPUT');
+      }
+      if (!(Number(trialLimit.value) > 0)) return err('Required: trial_limit.value must be a positive number', 'INVALID_INPUT');
+
+      const existing = await getTrial(env, inviteToken);
+      if (existing) return err('A trial entitlement already exists for this invite_token', 'ALREADY_EXISTS', 400);
+
+      try {
+        const trial = await createTrial(env, {
+          token: inviteToken, identifier, venture, product,
+          limitType: trialLimit.type, limitValue: trialLimit.value, sourceVenture,
+        });
+        console.log(`[consenta.cc trials] created token=${inviteToken} identifier=${normalizeIdentifier(identifier)} venture=${venture} product=${product} limit=${trialLimit.type}:${trialLimit.value}`);
+        return json({ created: true, trial }, 201);
+      } catch (e) {
+        return err(e.message || 'Failed to create trial', 'CREATE_FAILED', 400);
+      }
+    }
+
+    // GET /api/v1/trials/:token - real status check (payloads remaining /
+    // time remaining / claimed yet or not). Any venture holding a real
+    // token can check this - same internal trust model as every other
+    // cross-venture endpoint in this file.
+    const trialGetMatch = pathname.match(/^\/api\/v1\/trials\/([^/]+)$/);
+    if (method === 'GET' && trialGetMatch) {
+      const trial = await getTrial(env, decodeURIComponent(trialGetMatch[1]));
+      if (!trial) return err('No trial entitlement for this token', 'NOT_FOUND', 404);
+      return json({ trial });
+    }
+
+    // POST /api/v1/trials/:token/consume - record one real usage tick
+    // against an ACTIVE trial. Called server-to-server by the venture's
+    // own backend at the moment it services a real request against the
+    // trial's product (e.g. weylandai.com's requireProductAccess(), see
+    // src/lib/auth.js in that repo). {ok:false} for an exhausted/expired/
+    // not-yet-activated trial is a normal, expected outcome for the
+    // caller to branch on - not a 4xx/5xx by itself.
+    const trialConsumeMatch = pathname.match(/^\/api\/v1\/trials\/([^/]+)\/consume$/);
+    if (method === 'POST' && trialConsumeMatch) {
+      const token = decodeURIComponent(trialConsumeMatch[1]);
+      let body = {};
+      try { body = await request.json(); } catch { /* amount defaults below */ }
+      const amount = Number(body?.amount) > 0 ? Number(body.amount) : 1;
+      const result = await consumeTrial(env, token, amount);
+      return json(result, result.ok ? 200 : 409);
+    }
+
+    // POST /api/v1/trials/:token/claim - the real CLAIM action: records
+    // the cross-venture consent decision AND activates the trial's
+    // clock/counter in one atomic request, called by the /claim page's own
+    // JS below. Idempotent on the activation half (see activateTrial) -
+    // calling this twice does not reset an already-active trial's clock.
+    const trialClaimMatch = pathname.match(/^\/api\/v1\/trials\/([^/]+)\/claim$/);
+    if (method === 'POST' && trialClaimMatch) {
+      const token = decodeURIComponent(trialClaimMatch[1]);
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return err('Invalid JSON body', 'INVALID_INPUT');
+      }
+      const { granted } = body || {};
+      if (typeof granted !== 'boolean') return err('Required: granted must be true or false', 'INVALID_INPUT');
+
+      const existingTrial = await getTrial(env, token);
+      if (!existingTrial) return err('No trial entitlement for this token', 'NOT_FOUND', 404);
+
+      const consentResult = await recordConsent(env, {
+        identifier: existingTrial.identifier, scope: CONSENT_SCOPE, granted, sourceVenture: existingTrial.venture,
+      });
+      const trial = await activateTrial(env, token);
+      console.log(`[consenta.cc trials] claimed token=${token} identifier=${existingTrial.identifier} granted=${granted} status=${trial.status}`);
+
+      return json({ consented: consentResult, trial }, 200);
+    }
+
+    // GET /claim?token=&return_to= - the real "claim the profile and start
+    // using the trial" landing page a person reaches from the pitch
+    // email's claim button. See claimPageHtml() above for the full design
+    // note. return_to is the venture's own real page that knows how to
+    // consume a ?trial_token= query param (e.g. weylandai.com's index.html
+    // ephemeralToken(), which was extended alongside this feature to
+    // honor an incoming trial_token instead of always minting a fresh
+    // anonymous ephemeral session).
+    if (method === 'GET' && pathname === '/claim') {
+      const token = url.searchParams.get('token');
+      const returnTo = url.searchParams.get('return_to') || '';
+      if (!token) {
+        return new Response(consentPageErrorHtml('This page requires a token query parameter.'), {
+          status: 400,
+          headers: { 'Content-Type': 'text/html; charset=utf-8' },
+        });
+      }
+
+      // Never trust the URL alone - confirm the AuthFor ephemeral invite
+      // is still real and unexpired with a live server-side call before
+      // showing anything.
+      let verifyOk = false;
+      try {
+        const verifyResp = await fetch('https://authfor.com/api/v1/ephemeral/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token }),
+        });
+        verifyOk = verifyResp.ok;
+      } catch {
+        verifyOk = false;
+      }
+      if (!verifyOk) {
+        return new Response(consentPageErrorHtml('This invite link is invalid or has expired. Ask whoever sent it to resend your invite.'), {
+          status: 404,
+          headers: { 'Content-Type': 'text/html; charset=utf-8' },
+        });
+      }
+
+      const trial = await getTrial(env, token);
+      if (!trial) {
+        return new Response(consentPageErrorHtml('No trial was found for this invite link.'), {
+          status: 404,
+          headers: { 'Content-Type': 'text/html; charset=utf-8' },
+        });
+      }
+
+      const html = trial.status === 'pending'
+        ? claimPageHtml({ token, trial, returnTo })
+        : claimAlreadyActiveHtml({ trial, returnTo });
+      return new Response(html, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
     }
 
     // GET /consent?identifier=&source_venture=&return_url=
