@@ -13,7 +13,8 @@ routes = [
   { pattern = "consenta.cc/api/v1/consent*", zone_name = "consenta.cc" },
   { pattern = "consenta.cc/consent*", zone_name = "consenta.cc" },
   { pattern = "consenta.cc/api/v1/trials*", zone_name = "consenta.cc" },
-  { pattern = "consenta.cc/claim*", zone_name = "consenta.cc" }
+  { pattern = "consenta.cc/claim*", zone_name = "consenta.cc" },
+  { pattern = "consenta.cc/api/v1/dsar*", zone_name = "consenta.cc" }
 ]
 
 [[d1_databases]]

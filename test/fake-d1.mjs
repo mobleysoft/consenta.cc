@@ -7,6 +7,7 @@ export function fakeD1() {
   const suppressions = [];
   const consents = [];
   const trials = [];
+  const dsarRequests = [];
 
   function findRow(identifier, channel) {
     return suppressions.find((s) => s.identifier === identifier && s.channel === channel) || null;
@@ -18,6 +19,10 @@ export function fakeD1() {
 
   function findTrial(id) {
     return trials.find((t) => t.id === id) || null;
+  }
+
+  function findDsar(id) {
+    return dsarRequests.find((d) => d.id === id) || null;
   }
 
   const db = {
@@ -68,6 +73,18 @@ export function fakeD1() {
                 const t = findTrial(id);
                 if (t) Object.assign(t, { remaining_value, status });
               }
+              if (sql.startsWith('INSERT INTO dsar_requests')) {
+                const [id, identifier, request_type, source_venture, details, created_at] = args;
+                dsarRequests.push({
+                  id, identifier, request_type, source_venture, details,
+                  status: 'pending', created_at, resolved_at: null, resolution_note: null,
+                });
+              }
+              if (sql.startsWith('UPDATE dsar_requests SET status')) {
+                const [status, resolved_at, resolution_note, id] = args;
+                const d = findDsar(id);
+                if (d) Object.assign(d, { status, resolved_at, resolution_note });
+              }
               return { success: true };
             },
             async first() {
@@ -79,6 +96,10 @@ export function fakeD1() {
                 const [identifier, scope] = args;
                 return findConsent(identifier, scope);
               }
+              if (sql.startsWith('SELECT * FROM dsar_requests')) {
+                const [id] = args;
+                return findDsar(id);
+              }
               if (sql.includes('FROM trial_entitlements')) {
                 const [id] = args;
                 return findTrial(id);
@@ -86,6 +107,10 @@ export function fakeD1() {
               return null;
             },
             async all() {
+              if (sql.startsWith('SELECT * FROM dsar_requests WHERE identifier')) {
+                const [identifier] = args;
+                return { results: dsarRequests.filter((d) => d.identifier === identifier).sort((a, b) => (a.created_at < b.created_at ? 1 : -1)) };
+              }
               return { results: [] };
             },
           };
@@ -94,5 +119,5 @@ export function fakeD1() {
     },
   };
 
-  return { CONSENTA_DB: db, _suppressions: suppressions, _consents: consents, _trials: trials };
+  return { CONSENTA_DB: db, _suppressions: suppressions, _consents: consents, _trials: trials, _dsar: dsarRequests };
 }

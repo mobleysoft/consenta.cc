@@ -553,3 +553,120 @@ test('GET /claim: an already-claimed trial skips the consent form and offers a d
     global.fetch = realFetch;
   }
 });
+
+test('POST /api/v1/dsar: records a real request and returns 201', async () => {
+  const env = fakeD1();
+  const res = await worker.fetch(
+    req('POST', '/api/v1/dsar', {
+      identifier: 'lead@acme.com',
+      request_type: 'deletion',
+      source_venture: 'salesfactorai.com',
+      details: 'Please delete all records tied to this email.',
+    }),
+    env,
+    makeCtx()
+  );
+  assert.equal(res.status, 201);
+  const body = await res.json();
+  assert.equal(body.created, true);
+  assert.equal(body.request.status, 'pending');
+  assert.equal(body.request.identifier, 'lead@acme.com');
+  assert.equal(env._dsar.length, 1);
+});
+
+test('POST /api/v1/dsar: missing identifier is a real 400', async () => {
+  const env = fakeD1();
+  const res = await worker.fetch(
+    req('POST', '/api/v1/dsar', { request_type: 'access', source_venture: 'salesfactorai.com' }),
+    env,
+    makeCtx()
+  );
+  assert.equal(res.status, 400);
+  const body = await res.json();
+  assert.equal(body.code, 'INVALID_INPUT');
+});
+
+test('POST /api/v1/dsar: an invalid request_type is rejected', async () => {
+  const env = fakeD1();
+  const res = await worker.fetch(
+    req('POST', '/api/v1/dsar', { identifier: 'lead@acme.com', request_type: 'sabotage', source_venture: 'salesfactorai.com' }),
+    env,
+    makeCtx()
+  );
+  assert.equal(res.status, 400);
+});
+
+test('GET /api/v1/dsar/:id: returns a real request by id', async () => {
+  const env = fakeD1();
+  const createRes = await worker.fetch(
+    req('POST', '/api/v1/dsar', { identifier: 'lead@acme.com', request_type: 'access', source_venture: 'salesfactorai.com' }),
+    env,
+    makeCtx()
+  );
+  const { request: created } = await createRes.json();
+
+  const res = await worker.fetch(req('GET', `/api/v1/dsar/${created.id}`), env, makeCtx());
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.request.id, created.id);
+  assert.equal(body.request.status, 'pending');
+});
+
+test('GET /api/v1/dsar/:id: an unknown id is a real 404, not a silent empty result', async () => {
+  const env = fakeD1();
+  const res = await worker.fetch(req('GET', '/api/v1/dsar/does-not-exist'), env, makeCtx());
+  assert.equal(res.status, 404);
+});
+
+test('GET /api/v1/dsar?identifier=: lists all real requests for that identifier, newest first', async () => {
+  const env = fakeD1();
+  await worker.fetch(req('POST', '/api/v1/dsar', { identifier: 'lead@acme.com', request_type: 'access', source_venture: 'salesfactorai.com' }), env, makeCtx());
+  await worker.fetch(req('POST', '/api/v1/dsar', { identifier: 'lead@acme.com', request_type: 'deletion', source_venture: 'salesfactorai.com' }), env, makeCtx());
+  await worker.fetch(req('POST', '/api/v1/dsar', { identifier: 'someone-else@acme.com', request_type: 'access', source_venture: 'salesfactorai.com' }), env, makeCtx());
+
+  const res = await worker.fetch(req('GET', '/api/v1/dsar?identifier=lead@acme.com'), env, makeCtx());
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.requests.length, 2);
+});
+
+test('POST /api/v1/dsar/:id/resolve: records a real resolution outcome', async () => {
+  const env = fakeD1();
+  const createRes = await worker.fetch(
+    req('POST', '/api/v1/dsar', { identifier: 'lead@acme.com', request_type: 'deletion', source_venture: 'salesfactorai.com' }),
+    env,
+    makeCtx()
+  );
+  const { request: created } = await createRes.json();
+
+  const res = await worker.fetch(
+    req('POST', `/api/v1/dsar/${created.id}/resolve`, { status: 'resolved', resolution_note: 'Deleted from salesfactorai.com CRM 2026-09-14.' }),
+    env,
+    makeCtx()
+  );
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.resolved, true);
+  assert.equal(body.request.status, 'resolved');
+  assert.equal(body.request.resolution_note, 'Deleted from salesfactorai.com CRM 2026-09-14.');
+  assert.ok(body.request.resolved_at);
+});
+
+test('POST /api/v1/dsar/:id/resolve: an invalid status is rejected', async () => {
+  const env = fakeD1();
+  const createRes = await worker.fetch(
+    req('POST', '/api/v1/dsar', { identifier: 'lead@acme.com', request_type: 'access', source_venture: 'salesfactorai.com' }),
+    env,
+    makeCtx()
+  );
+  const { request: created } = await createRes.json();
+
+  const res = await worker.fetch(req('POST', `/api/v1/dsar/${created.id}/resolve`, { status: 'pending' }), env, makeCtx());
+  assert.equal(res.status, 400);
+});
+
+test('POST /api/v1/dsar/:id/resolve: an unknown id is a real 404', async () => {
+  const env = fakeD1();
+  const res = await worker.fetch(req('POST', '/api/v1/dsar/does-not-exist/resolve', { status: 'resolved' }), env, makeCtx());
+  assert.equal(res.status, 404);
+});

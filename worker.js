@@ -48,6 +48,7 @@
 import { recordSuppression, checkSuppression, isValidChannel, normalizeIdentifier } from './modules/suppressions-store.js';
 import { recordConsent, checkConsent, isValidScope, normalizeIdentifier as normalizeConsentIdentifier } from './modules/consents-store.js';
 import { createTrial, getTrial, activateTrial, consumeTrial, isValidLimitType } from './modules/trials-store.js';
+import { createDsarRequest, getDsarRequest, listDsarRequestsByIdentifier, resolveDsarRequest, isValidRequestType, normalizeIdentifier as normalizeDsarIdentifier } from './modules/dsar-store.js';
 
 const CONSENT_SCOPE = 'cross_venture_data_sharing';
 
@@ -410,6 +411,77 @@ export default {
         reason: result.reason,
         ...(result.reason !== 'no_record' ? { source_venture: result.source_venture, recorded_at: result.recorded_at } : {}),
       });
+    }
+
+    // POST /api/v1/dsar - real data subject access/deletion/portability
+    // request intake. Honestly scoped: this records and tracks a real
+    // request, it does not fulfill it automatically - no jurisdiction rules
+    // engine, no auto-deletion elsewhere. See modules/dsar-store.js.
+    if (method === 'POST' && pathname === '/api/v1/dsar') {
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return err('Invalid JSON body', 'INVALID_INPUT');
+      }
+      const { identifier, request_type: requestType, source_venture: sourceVenture, details } = body || {};
+      if (!identifier) return err('Required: identifier', 'INVALID_INPUT');
+      if (!requestType || !isValidRequestType(requestType)) {
+        return err("Required: request_type must be one of 'access', 'deletion', 'portability'", 'INVALID_INPUT');
+      }
+      if (!sourceVenture) return err('Required: source_venture', 'INVALID_INPUT');
+
+      const result = await createDsarRequest(env, { identifier, requestType, sourceVenture, details });
+
+      // Log every write - same audit-trail discipline as every other
+      // endpoint in this file, since there's no auth gate to rely on instead.
+      console.log(
+        `[consenta.cc dsar] created id=${result.id} identifier=${result.identifier} request_type=${requestType} source_venture=${sourceVenture}`
+      );
+
+      return json({ created: true, request: result }, 201);
+    }
+
+    // GET /api/v1/dsar?identifier=X - a real person (or the venture that
+    // collected their info) checking what requests are on file for them.
+    if (method === 'GET' && pathname === '/api/v1/dsar') {
+      const identifier = url.searchParams.get('identifier');
+      if (!identifier) return err('Required query param: identifier', 'INVALID_INPUT');
+      const requests = await listDsarRequestsByIdentifier(env, identifier);
+      return json({ identifier: normalizeDsarIdentifier(identifier), requests });
+    }
+
+    // GET /api/v1/dsar/:id - real status check for one specific request.
+    const dsarGetMatch = pathname.match(/^\/api\/v1\/dsar\/([^/]+)$/);
+    if (method === 'GET' && dsarGetMatch) {
+      const dsarRequest = await getDsarRequest(env, decodeURIComponent(dsarGetMatch[1]));
+      if (!dsarRequest) return err('No DSAR request found for this id', 'NOT_FOUND', 404);
+      return json({ request: dsarRequest });
+    }
+
+    // POST /api/v1/dsar/:id/resolve - record that a request was actually
+    // actioned (or rejected) by whoever did the real work. No auth gate yet
+    // - same internal trust model as every other endpoint here - so this is
+    // only as safe as who has the URL, same as suppressions/consent/trials.
+    const dsarResolveMatch = pathname.match(/^\/api\/v1\/dsar\/([^/]+)\/resolve$/);
+    if (method === 'POST' && dsarResolveMatch) {
+      const id = decodeURIComponent(dsarResolveMatch[1]);
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return err('Invalid JSON body', 'INVALID_INPUT');
+      }
+      const { status, resolution_note: resolutionNote } = body || {};
+      if (status !== 'resolved' && status !== 'rejected') {
+        return err("Required: status must be 'resolved' or 'rejected'", 'INVALID_INPUT');
+      }
+      const existing = await getDsarRequest(env, id);
+      if (!existing) return err('No DSAR request found for this id', 'NOT_FOUND', 404);
+
+      const result = await resolveDsarRequest(env, id, { status, resolutionNote });
+      console.log(`[consenta.cc dsar] ${status} id=${id} identifier=${existing.identifier}`);
+      return json({ resolved: true, request: result });
     }
 
     // POST /api/v1/trials - create a real, pending trial entitlement for
