@@ -159,6 +159,112 @@ function consentPageErrorHtml(message) {
 </html>`;
 }
 
+// --- DSAR self-service form ---
+//
+// Real next rung named by this venture's own 2026-09-13 next_step: the
+// /api/v1/dsar intake API existed but nothing let a real person actually
+// file a request through it - only server-to-server callers could reach
+// it. This is the same honest pattern as /consent above: a plain HTML
+// form, no auth gate (same internal trust model as every other endpoint
+// in this file), POSTs straight to the real /api/v1/dsar endpoint, shows
+// the real returned request id so the person can check status later via
+// GET /api/v1/dsar/:id. Intake + status only - filing a request here does
+// not automatically fulfill it (see DSAR_INTEGRATION.md).
+function dsarPageHtml() {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Data request — consenta.cc</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 560px; margin: 8vh auto; padding: 0 24px; color: #1a1a1a; line-height: 1.5; }
+  h1 { font-size: 1.35rem; }
+  p { color: #333; }
+  label { display: block; font-weight: 600; margin-top: 18px; margin-bottom: 6px; font-size: 0.9rem; }
+  input, select, textarea { width: 100%; box-sizing: border-box; padding: 10px 12px; font-size: 1rem; border-radius: 8px; border: 1px solid #ccc; font-family: inherit; }
+  textarea { resize: vertical; min-height: 70px; }
+  button { margin-top: 24px; width: 100%; padding: 14px 16px; font-size: 1rem; border-radius: 8px; border: 1px solid #111; background: #111; color: #fff; cursor: pointer; }
+  button:disabled { opacity: 0.6; cursor: default; }
+  .fineprint { margin-top: 20px; font-size: 0.85rem; color: #666; }
+  #status { margin-top: 20px; font-weight: 600; }
+  #status.error { color: #b00020; }
+  .reqid { font-family: ui-monospace, Menlo, monospace; background: #f2f2f2; padding: 2px 6px; border-radius: 4px; }
+</style>
+</head>
+<body>
+  <h1>Request your data</h1>
+  <p>
+    Use this form to ask a MobCorp venture to show you what it has on file
+    for you, delete it, or send you a copy. This records and tracks a real
+    request - it does not fulfill it automatically; a real person reviews
+    and resolves each one.
+  </p>
+  <form id="dsarForm">
+    <label for="identifier">Your email or identifier</label>
+    <input id="identifier" name="identifier" type="text" required placeholder="you@example.com">
+
+    <label for="sourceVenture">Which venture is this about?</label>
+    <input id="sourceVenture" name="sourceVenture" type="text" required placeholder="e.g. salesfactorai.com">
+
+    <label for="requestType">What are you requesting?</label>
+    <select id="requestType" name="requestType">
+      <option value="access">Access - show me what you have</option>
+      <option value="deletion">Deletion - delete my data</option>
+      <option value="portability">Portability - send me a copy</option>
+    </select>
+
+    <label for="details">Anything else we should know? (optional)</label>
+    <textarea id="details" name="details" placeholder="Optional details"></textarea>
+
+    <button id="submitBtn" type="submit">Submit request</button>
+  </form>
+  <div id="status"></div>
+  <p class="fineprint">No auth gate on this form yet - only submits a real, logged request against the identifier and venture you enter.</p>
+<script>
+(function () {
+  var form = document.getElementById('dsarForm');
+  var submitBtn = document.getElementById('submitBtn');
+  var statusEl = document.getElementById('status');
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    submitBtn.disabled = true;
+    statusEl.className = '';
+    statusEl.textContent = 'Submitting...';
+    fetch('/api/v1/dsar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        identifier: document.getElementById('identifier').value,
+        request_type: document.getElementById('requestType').value,
+        source_venture: document.getElementById('sourceVenture').value,
+        details: document.getElementById('details').value || undefined,
+      }),
+    })
+      .then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body }; }); })
+      .then(function (result) {
+        if (!result.ok) {
+          statusEl.className = 'error';
+          statusEl.textContent = (result.body && result.body.detail && result.body.detail.message) || 'Something went wrong submitting your request.';
+          submitBtn.disabled = false;
+          return;
+        }
+        form.style.display = 'none';
+        statusEl.innerHTML = 'Request received. Your request id is <span class="reqid">' + result.body.request.id + '</span> - save it to check status later.';
+      })
+      .catch(function () {
+        statusEl.className = 'error';
+        statusEl.textContent = 'Something went wrong submitting your request. Please try again.';
+        submitBtn.disabled = false;
+      });
+  });
+})();
+</script>
+</body>
+</html>`;
+}
+
 // --- Trial claim page ---
 //
 // The real "claim the profile and start using the trial" moment: a person
@@ -647,6 +753,17 @@ export default {
         });
       }
       return new Response(consentPageHtml({ identifier, sourceVenture, returnUrl }), {
+        status: 200,
+        headers: { 'Content-Type': 'text/html; charset=utf-8' },
+      });
+    }
+
+    // GET /dsar - the real self-service data-request form named in this
+    // venture's own next_step (2026-09-13). No query params required -
+    // this is meant to be reachable directly, unlike /consent and /claim
+    // which are redirect targets.
+    if (method === 'GET' && pathname === '/dsar') {
+      return new Response(dsarPageHtml(), {
         status: 200,
         headers: { 'Content-Type': 'text/html; charset=utf-8' },
       });

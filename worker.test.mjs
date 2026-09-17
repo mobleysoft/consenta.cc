@@ -368,6 +368,19 @@ test('GET /consent: missing identifier/source_venture is a real 400, not a broke
   assert.match(res.headers.get('content-type'), /text\/html/);
 });
 
+test('GET /dsar: renders a real self-service HTML form, not a stub', async () => {
+  const env = fakeD1();
+  const res = await worker.fetch(req('GET', '/dsar'), env, makeCtx());
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type'), /text\/html/);
+  const html = await res.text();
+  assert.match(html, /id="identifier"/);
+  assert.match(html, /id="sourceVenture"/);
+  assert.match(html, /id="requestType"/);
+  assert.match(html, /id="dsarForm"/);
+  assert.match(html, /\/api\/v1\/dsar/);
+});
+
 // --- Trial entitlements (mascom/flagged_next_steps_backlog.json id
 // conglomerate-wide-trial-invite-emails) ---
 
