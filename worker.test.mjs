@@ -683,3 +683,116 @@ test('POST /api/v1/dsar/:id/resolve: an unknown id is a real 404', async () => {
   const res = await worker.fetch(req('POST', '/api/v1/dsar/does-not-exist/resolve', { status: 'resolved' }), env, makeCtx());
   assert.equal(res.status, 404);
 });
+
+test('GET /admin/dsar: no CONSENTA_ADMIN_TOKEN configured fails closed, not open', async () => {
+  const env = fakeD1();
+  const res = await worker.fetch(req('GET', '/admin/dsar'), env, makeCtx());
+  assert.equal(res.status, 401);
+});
+
+test('GET /admin/dsar: wrong token is a real 401', async () => {
+  const env = fakeD1();
+  env.CONSENTA_ADMIN_TOKEN = 'right-token';
+  const res = await worker.fetch(req('GET', '/admin/dsar?token=wrong-token'), env, makeCtx());
+  assert.equal(res.status, 401);
+});
+
+test('GET /admin/dsar: correct token lists real outstanding requests, not a stub', async () => {
+  const env = fakeD1();
+  env.CONSENTA_ADMIN_TOKEN = 'right-token';
+  const createRes = await worker.fetch(
+    req('POST', '/api/v1/dsar', { identifier: 'lead@acme.com', request_type: 'deletion', source_venture: 'salesfactorai.com' }),
+    env,
+    makeCtx()
+  );
+  const { request: created } = await createRes.json();
+
+  const res = await worker.fetch(req('GET', '/admin/dsar?token=right-token'), env, makeCtx());
+  assert.equal(res.status, 200);
+  const html = await res.text();
+  assert.match(html, new RegExp(created.id.slice(0, 8)));
+  assert.match(html, /lead@acme\.com/);
+});
+
+test('GET /admin/dsar: correct token via Authorization header also works', async () => {
+  const env = fakeD1();
+  env.CONSENTA_ADMIN_TOKEN = 'right-token';
+  const res = await worker.fetch(
+    new Request('https://consenta.cc/admin/dsar', { headers: { Authorization: 'Bearer right-token' } }),
+    env,
+    makeCtx()
+  );
+  assert.equal(res.status, 200);
+});
+
+test('GET /admin/dsar: an already-resolved request does not show in the queue', async () => {
+  const env = fakeD1();
+  env.CONSENTA_ADMIN_TOKEN = 'right-token';
+  const createRes = await worker.fetch(
+    req('POST', '/api/v1/dsar', { identifier: 'lead@acme.com', request_type: 'access', source_venture: 'salesfactorai.com' }),
+    env,
+    makeCtx()
+  );
+  const { request: created } = await createRes.json();
+  await worker.fetch(req('POST', `/api/v1/dsar/${created.id}/resolve`, { status: 'resolved' }), env, makeCtx());
+
+  const res = await worker.fetch(req('GET', '/admin/dsar?token=right-token'), env, makeCtx());
+  const html = await res.text();
+  assert.doesNotMatch(html, new RegExp(created.id.slice(0, 8)));
+  assert.match(html, /Nothing pending/);
+});
+
+test('POST /admin/dsar/:id/resolve: no token is a real 401, request stays pending', async () => {
+  const env = fakeD1();
+  env.CONSENTA_ADMIN_TOKEN = 'right-token';
+  const createRes = await worker.fetch(
+    req('POST', '/api/v1/dsar', { identifier: 'lead@acme.com', request_type: 'access', source_venture: 'salesfactorai.com' }),
+    env,
+    makeCtx()
+  );
+  const { request: created } = await createRes.json();
+
+  const res = await worker.fetch(req('POST', `/admin/dsar/${created.id}/resolve`, { status: 'resolved' }), env, makeCtx());
+  assert.equal(res.status, 401);
+  assert.equal(env._dsar[0].status, 'pending');
+});
+
+test('POST /admin/dsar/:id/resolve: correct token resolves a real request', async () => {
+  const env = fakeD1();
+  env.CONSENTA_ADMIN_TOKEN = 'right-token';
+  const createRes = await worker.fetch(
+    req('POST', '/api/v1/dsar', { identifier: 'lead@acme.com', request_type: 'deletion', source_venture: 'salesfactorai.com' }),
+    env,
+    makeCtx()
+  );
+  const { request: created } = await createRes.json();
+
+  const res = await worker.fetch(
+    new Request(`https://consenta.cc/admin/dsar/${created.id}/resolve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer right-token' },
+      body: JSON.stringify({ status: 'resolved', resolution_note: 'Deleted from CRM.' }),
+    }),
+    env,
+    makeCtx()
+  );
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.request.status, 'resolved');
+  assert.equal(env._dsar[0].status, 'resolved');
+});
+
+test('POST /admin/dsar/:id/resolve: an unknown id is a real 404, not a silent success', async () => {
+  const env = fakeD1();
+  env.CONSENTA_ADMIN_TOKEN = 'right-token';
+  const res = await worker.fetch(
+    new Request('https://consenta.cc/admin/dsar/does-not-exist/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer right-token' },
+      body: JSON.stringify({ status: 'resolved' }),
+    }),
+    env,
+    makeCtx()
+  );
+  assert.equal(res.status, 404);
+});

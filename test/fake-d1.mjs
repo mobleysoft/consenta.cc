@@ -111,6 +111,13 @@ export function fakeD1() {
                 const [identifier] = args;
                 return { results: dsarRequests.filter((d) => d.identifier === identifier).sort((a, b) => (a.created_at < b.created_at ? 1 : -1)) };
               }
+              if (sql.startsWith('SELECT * FROM dsar_requests WHERE status')) {
+                return {
+                  results: dsarRequests
+                    .filter((d) => d.status === 'pending' || d.status === 'in_progress')
+                    .sort((a, b) => (a.created_at > b.created_at ? 1 : -1)),
+                };
+              }
               return { results: [] };
             },
           };

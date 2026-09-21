@@ -48,7 +48,7 @@
 import { recordSuppression, checkSuppression, isValidChannel, normalizeIdentifier } from './modules/suppressions-store.js';
 import { recordConsent, checkConsent, isValidScope, normalizeIdentifier as normalizeConsentIdentifier } from './modules/consents-store.js';
 import { createTrial, getTrial, activateTrial, consumeTrial, isValidLimitType } from './modules/trials-store.js';
-import { createDsarRequest, getDsarRequest, listDsarRequestsByIdentifier, resolveDsarRequest, isValidRequestType, normalizeIdentifier as normalizeDsarIdentifier } from './modules/dsar-store.js';
+import { createDsarRequest, getDsarRequest, listDsarRequestsByIdentifier, listPendingDsarRequests, resolveDsarRequest, isValidRequestType, normalizeIdentifier as normalizeDsarIdentifier } from './modules/dsar-store.js';
 
 const CONSENT_SCOPE = 'cross_venture_data_sharing';
 
@@ -258,6 +258,106 @@ function dsarPageHtml() {
         statusEl.textContent = 'Something went wrong submitting your request. Please try again.';
         submitBtn.disabled = false;
       });
+  });
+})();
+</script>
+</body>
+</html>`;
+}
+
+// --- Admin DSAR queue ---
+//
+// Real gap this closes: /api/v1/dsar's intake + /dsar's self-service form
+// both work, but resolveDsarRequest() had no caller except a raw
+// POST /api/v1/dsar/:id/resolve - there was no way for the actual person
+// doing DSAR fulfillment work to see what's outstanding or act on it
+// without crafting API calls by hand. That's not a usable compliance
+// workflow yet, whatever the intake side looks like.
+//
+// Unlike every other page in this file, this one is NOT meant to be public
+// - it's the first internal-only surface in this worker, so it's the first
+// one that needs an actual auth gate rather than inheriting the "logged,
+// not gated" trust model documented at the top of this file. Fails CLOSED:
+// if CONSENTA_ADMIN_TOKEN isn't configured, access is denied, not open -
+// same fail-closed philosophy already used for consent checks above.
+function isAdminAuthorized(request, url, env) {
+  const configured = env.CONSENTA_ADMIN_TOKEN;
+  if (!configured) return false;
+  const authHeader = request.headers.get('Authorization') || '';
+  const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  const provided = bearer || url.searchParams.get('token');
+  return !!provided && provided === configured;
+}
+
+function adminDsarPageHtml({ requests, token }) {
+  const tokenJson = JSON.stringify(token);
+  const rows = requests.map((r) => `
+    <tr data-id="${escapeHtml(r.id)}">
+      <td class="mono">${escapeHtml(r.id.slice(0, 8))}</td>
+      <td>${escapeHtml(r.identifier)}</td>
+      <td>${escapeHtml(r.request_type)}</td>
+      <td>${escapeHtml(r.source_venture)}</td>
+      <td>${escapeHtml(r.details || '')}</td>
+      <td>${escapeHtml(r.created_at)}</td>
+      <td>${escapeHtml(r.status)}</td>
+      <td>
+        <select class="status-choice"><option value="resolved">Resolved</option><option value="rejected">Rejected</option></select>
+        <input class="note" type="text" placeholder="Resolution note (optional)">
+        <button type="button" class="resolve-btn">Resolve</button>
+      </td>
+    </tr>`).join('');
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DSAR queue — consenta.cc admin</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 4vh 24px; color: #1a1a1a; }
+  h1 { font-size: 1.4rem; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+  th, td { border: 1px solid #ddd; padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #f2f2f2; }
+  .mono { font-family: ui-monospace, Menlo, monospace; }
+  .note { width: 160px; }
+  .empty { color: #666; margin-top: 20px; }
+  .row-status { margin-top: 6px; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+  <h1>Outstanding DSAR requests (${requests.length})</h1>
+  ${requests.length === 0 ? '<p class="empty">Nothing pending - the queue is empty.</p>' : `
+  <table>
+    <thead><tr><th>ID</th><th>Identifier</th><th>Type</th><th>Venture</th><th>Details</th><th>Created</th><th>Status</th><th>Resolve</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`}
+<script>
+(function () {
+  var token = ${tokenJson};
+  document.querySelectorAll('.resolve-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var row = btn.closest('tr');
+      var id = row.getAttribute('data-id');
+      var status = row.querySelector('.status-choice').value;
+      var note = row.querySelector('.note').value;
+      btn.disabled = true;
+      fetch('/admin/dsar/' + encodeURIComponent(id) + '/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+        body: JSON.stringify({ status: status, resolution_note: note || undefined }),
+      })
+        .then(function (res) { return res.json().then(function (b) { return { ok: res.ok, body: b }; }); })
+        .then(function (result) {
+          if (result.ok) {
+            row.querySelectorAll('td')[6].textContent = result.body.request.status;
+            row.querySelector('td:last-child').innerHTML = '<span class="row-status">Done.</span>';
+          } else {
+            btn.disabled = false;
+            alert((result.body && result.body.error) || 'Failed to resolve.');
+          }
+        })
+        .catch(function () { btn.disabled = false; alert('Failed to resolve.'); });
+    });
   });
 })();
 </script>
@@ -767,6 +867,50 @@ export default {
         status: 200,
         headers: { 'Content-Type': 'text/html; charset=utf-8' },
       });
+    }
+
+    // GET /admin/dsar?token= - the real operator-facing queue view named by
+    // this venture's own 2026-09-17 next_step gap: /api/v1/dsar/:id/resolve
+    // existed with no human-usable way to reach it. Internal-only - the
+    // first auth-gated surface in this worker, see isAdminAuthorized() above.
+    if (method === 'GET' && pathname === '/admin/dsar') {
+      if (!isAdminAuthorized(request, url, env)) return err('Unauthorized', 'UNAUTHORIZED', 401);
+      const requests = await listPendingDsarRequests(env);
+      const token = (request.headers.get('Authorization') || '').startsWith('Bearer ')
+        ? request.headers.get('Authorization').slice(7)
+        : url.searchParams.get('token');
+      return new Response(adminDsarPageHtml({ requests, token }), {
+        status: 200,
+        headers: { 'Content-Type': 'text/html; charset=utf-8' },
+      });
+    }
+
+    // POST /admin/dsar/:id/resolve - the authenticated resolve action the
+    // admin queue page above calls. Deliberately separate from the existing
+    // unauthenticated POST /api/v1/dsar/:id/resolve (left unchanged, same
+    // trust model as every other cross-venture endpoint in this file, in
+    // case a trusted server-to-server caller already depends on it) -
+    // additive, not a replacement.
+    const adminDsarResolveMatch = pathname.match(/^\/admin\/dsar\/([^/]+)\/resolve$/);
+    if (method === 'POST' && adminDsarResolveMatch) {
+      if (!isAdminAuthorized(request, url, env)) return err('Unauthorized', 'UNAUTHORIZED', 401);
+      const id = decodeURIComponent(adminDsarResolveMatch[1]);
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return err('Invalid JSON body', 'INVALID_INPUT');
+      }
+      const { status, resolution_note: resolutionNote } = body || {};
+      if (status !== 'resolved' && status !== 'rejected') {
+        return err("Required: status must be 'resolved' or 'rejected'", 'INVALID_INPUT');
+      }
+      const existing = await getDsarRequest(env, id);
+      if (!existing) return err('No DSAR request found for this id', 'NOT_FOUND', 404);
+
+      const result = await resolveDsarRequest(env, id, { status, resolutionNote });
+      console.log(`[consenta.cc dsar admin] ${status} id=${id} identifier=${existing.identifier}`);
+      return json({ resolved: true, request: result });
     }
 
     return err('Not found', 'NOT_FOUND', 404);

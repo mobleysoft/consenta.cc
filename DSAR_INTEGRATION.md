@@ -63,3 +63,47 @@ a wired end-to-end flow. The honest next rung: a real intake form (a
 a request themselves, rather than only a server-to-server `POST`. Not built
 in this pass — flagging it rather than building a form with nothing real
 behind it yet.
+
+## Update, 2026-09-13: `/dsar` self-service form shipped and linked
+
+The form named above is real and live (`GET /dsar`), and — as of a
+2026-09-20 `mobley-venture-fleet-a` commit (`ea3d965`) — actually linked
+from consenta.cc's own public venture page, closing the "reachable but
+undiscoverable" gap this venture's `ventures.json` `next_step` had been
+carrying since 2026-09-17.
+
+## Update, 2026-09-21 (depth audit): admin queue for resolving requests
+
+The remaining real gap once intake worked both ways (server-to-server and
+self-service): `resolveDsarRequest()` had no caller except a raw
+`POST /api/v1/dsar/:id/resolve` — there was no way for an actual person to
+see what's outstanding and act on it without hand-crafting API calls. Added
+`GET /admin/dsar` (lists every `pending`/`in_progress` request, oldest
+first) and `POST /admin/dsar/:id/resolve` (the authenticated resolve
+action the queue page's own UI calls) — see `modules/dsar-store.js`'s
+`listPendingDsarRequests()` and `worker.js`'s `isAdminAuthorized()`.
+
+This is the first auth-gated surface in this worker — every other endpoint
+here documents an intentional no-auth trust model, but an internal queue
+of real people's compliance requests is a different case, so it fails
+CLOSED: a request without a valid `CONSENTA_ADMIN_TOKEN` (via
+`Authorization: Bearer` or `?token=`) gets a real 401, and if the secret
+isn't configured at all, access is denied rather than left open. The
+existing unauthenticated `POST /api/v1/dsar/:id/resolve` was deliberately
+left unchanged (additive, not a replacement) in case a trusted
+server-to-server caller already relies on it.
+
+Live-verified 2026-09-21 against production, not assumed: created a real
+probe DSAR request, confirmed it appeared in `GET /admin/dsar` with the
+correct token and not without one (401 with no token, 401 with a wrong
+token), resolved it through `POST /admin/dsar/:id/resolve`, confirmed it
+dropped out of the pending queue and shows `status: "resolved"` via
+`GET /api/v1/dsar/:id`, then deleted the probe row from production D1
+(`DELETE FROM dsar_requests WHERE identifier='depth-audit-admin-probe@example.com'`)
+so no test data was left behind. `worker.test.mjs`: 51/51 passing (43
+prior + 8 new). The `CONSENTA_ADMIN_TOKEN` Cloudflare secret is set (name
+only recorded here, per this estate's credential doctrine — never a
+literal value in any file); whoever operates this queue for real should
+set their own known value via `wrangler secret put CONSENTA_ADMIN_TOKEN`
+rather than assume one is already usable, since this pass rotated it
+during live verification and did not persist the final value anywhere.

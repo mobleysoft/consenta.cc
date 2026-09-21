@@ -61,6 +61,25 @@ export async function listDsarRequestsByIdentifier(env, identifier) {
 }
 
 /**
+ * The real operator-facing queue: every request still awaiting action,
+ * oldest first (FIFO - the honest order a real compliance queue should be
+ * worked in). Separate from listDsarRequestsByIdentifier, which answers a
+ * different question ("what's on file for this one person") - this answers
+ * "what's outstanding across everyone," the thing an actual person needs to
+ * see before resolveDsarRequest() means anything as a real workflow rather
+ * than a raw API call nobody but a script can reach.
+ */
+export async function listPendingDsarRequests(env, { limit = 100 } = {}) {
+  const result = await env.CONSENTA_DB
+    .prepare(
+      `SELECT * FROM dsar_requests WHERE status IN ('pending', 'in_progress') ORDER BY created_at ASC LIMIT ?`
+    )
+    .bind(limit)
+    .all();
+  return result.results || [];
+}
+
+/**
  * Record that a real request was actually actioned. status must be
  * 'resolved' or 'rejected' — 'pending'/'in_progress' aren't valid resolution
  * outcomes (use a separate status-only update for those if that need arises
