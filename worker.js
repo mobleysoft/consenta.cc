@@ -49,6 +49,7 @@ import { recordSuppression, checkSuppression, isValidChannel, normalizeIdentifie
 import { recordConsent, checkConsent, isValidScope, normalizeIdentifier as normalizeConsentIdentifier } from './modules/consents-store.js';
 import { createTrial, getTrial, activateTrial, consumeTrial, isValidLimitType } from './modules/trials-store.js';
 import { createDsarRequest, getDsarRequest, listDsarRequestsByIdentifier, listPendingDsarRequests, resolveDsarRequest, isValidRequestType, normalizeIdentifier as normalizeDsarIdentifier } from './modules/dsar-store.js';
+import { HEALTH_CARD_HTML } from './modules/health-card-page.js';
 
 const CONSENT_SCOPE = 'cross_venture_data_sharing';
 
@@ -520,6 +521,17 @@ export default {
     const { method } = request;
 
     if (method === 'OPTIONS') return new Response(null, { headers: CORS });
+
+    // Patient-controlled portable health card - all data lives client-side
+    // in the URL fragment (never sent to this or any server, per the URL
+    // spec). No D1 table, no server-side storage of anything a user enters.
+    // Not a medical record, not HIPAA-covered - see the page's own
+    // disclaimer. New direction proposed live in a 2026-09-24 meeting.
+    if (method === 'GET' && pathname === '/health-card') {
+      return new Response(HEALTH_CARD_HTML, {
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+      });
+    }
 
     if (method === 'GET' && pathname === '/api/v1/health') {
       return json({ status: 'ok', product: 'consenta-cc-suppressions', timestamp: Date.now() });
