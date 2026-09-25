@@ -107,3 +107,29 @@ literal value in any file); whoever operates this queue for real should
 set their own known value via `wrangler secret put CONSENTA_ADMIN_TOKEN`
 rather than assume one is already usable, since this pass rotated it
 during live verification and did not persist the final value anywhere.
+
+## Update, 2026-09-25 (depth audit): admin queue was unreachable for 5 days — fixed
+
+Checked live rather than trusted: the 2026-09-21 gap above was real and had
+already bitten someone. `GET /admin/dsar` was still returning 401 for every
+token, and the queue had two real requests sitting `pending` since
+2026-09-24 (a `ph-audit-test@example.com` / `salesfactorai.com` probe from a
+same-day Product-Hunt-readiness check, plus one created by this pass to
+confirm the round-trip) — nobody could resolve either one because, per the
+2026-09-21 note above, the rotated token's value was never written down
+anywhere.
+
+Fixed: rotated `CONSENTA_ADMIN_TOKEN` again via `wrangler secret put`, this
+time live-verified (`GET /admin/dsar?token=...` → real 200 with the queue
+contents, not assumed) *before* persisting anything, then recorded the new
+value in this estate's existing sovereign-keys vault
+(`mascom/MASCOM/keys.mobdbt`, gitignored, 0600, the same store already used
+for every other worker's rotated secrets — see that file's own header) under
+`consenta-cc-worker.CONSENTA_ADMIN_TOKEN`, not in this repo or any tracked
+file. Both outstanding requests were then resolved for real through the now-
+working queue and confirmed dropped to `Outstanding DSAR requests (0)`.
+
+Operating note for whoever needs to open this queue next: the current real
+value lives in `mascom/MASCOM/keys.mobdbt` (search for
+`consenta-cc-worker.CONSENTA_ADMIN_TOKEN`) — check there before rotating a
+new one and repeating this same gap a third time.
