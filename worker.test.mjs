@@ -796,3 +796,79 @@ test('POST /admin/dsar/:id/resolve: an unknown id is a real 404, not a silent su
   );
   assert.equal(res.status, 404);
 });
+
+test('GET /compliance-check: renders the real self-serve checklist form', async () => {
+  const env = fakeD1();
+  const res = await worker.fetch(req('GET', '/compliance-check'), env, makeCtx());
+  assert.equal(res.status, 200);
+  const html = await res.text();
+  assert.match(html, /GDPR \(European Union\)/);
+  assert.match(html, /Not legal advice/);
+});
+
+test('POST /api/v1/compliance-check: a single jurisdiction returns its real static checklist', async () => {
+  const env = fakeD1();
+  const res = await worker.fetch(
+    req('POST', '/api/v1/compliance-check', { jurisdictions: ['gdpr_eu'], dataCategories: [] }),
+    env,
+    makeCtx()
+  );
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.checklist.length, 1);
+  assert.equal(body.checklist[0].jurisdiction_key, 'gdpr_eu');
+  assert.ok(body.checklist[0].items.length >= 5);
+  assert.match(body.disclaimer, /Not legal advice/);
+});
+
+test('POST /api/v1/compliance-check: a data category adds its real jurisdiction-specific modifier item', async () => {
+  const env = fakeD1();
+  const res = await worker.fetch(
+    req('POST', '/api/v1/compliance-check', { jurisdictions: ['gdpr_eu'], dataCategories: ['childrens_data'] }),
+    env,
+    makeCtx()
+  );
+  const body = await res.json();
+  const items = body.checklist[0].items;
+  const modifierItem = items.find((i) => i.data_category === "Children's data");
+  assert.ok(modifierItem, 'expected a childrens_data modifier item for gdpr_eu');
+  assert.match(modifierItem.requirement, /Parental consent/);
+});
+
+test('POST /api/v1/compliance-check: multiple jurisdictions each get their own real group', async () => {
+  const env = fakeD1();
+  const res = await worker.fetch(
+    req('POST', '/api/v1/compliance-check', { jurisdictions: ['gdpr_eu', 'lgpd_br'], dataCategories: [] }),
+    env,
+    makeCtx()
+  );
+  const body = await res.json();
+  assert.equal(body.checklist.length, 2);
+  assert.deepEqual(body.checklist.map((g) => g.jurisdiction_key).sort(), ['gdpr_eu', 'lgpd_br']);
+});
+
+test('POST /api/v1/compliance-check: empty jurisdictions is a real 400, not an empty success', async () => {
+  const env = fakeD1();
+  const res = await worker.fetch(req('POST', '/api/v1/compliance-check', { jurisdictions: [] }), env, makeCtx());
+  assert.equal(res.status, 400);
+});
+
+test('POST /api/v1/compliance-check: an unknown jurisdiction key is a real 400', async () => {
+  const env = fakeD1();
+  const res = await worker.fetch(
+    req('POST', '/api/v1/compliance-check', { jurisdictions: ['made_up_country'] }),
+    env,
+    makeCtx()
+  );
+  assert.equal(res.status, 400);
+});
+
+test('POST /api/v1/compliance-check: an unknown data category key is a real 400', async () => {
+  const env = fakeD1();
+  const res = await worker.fetch(
+    req('POST', '/api/v1/compliance-check', { jurisdictions: ['gdpr_eu'], dataCategories: ['made_up_category'] }),
+    env,
+    makeCtx()
+  );
+  assert.equal(res.status, 400);
+});

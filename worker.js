@@ -50,6 +50,8 @@ import { recordConsent, checkConsent, isValidScope, normalizeIdentifier as norma
 import { createTrial, getTrial, activateTrial, consumeTrial, isValidLimitType } from './modules/trials-store.js';
 import { createDsarRequest, getDsarRequest, listDsarRequestsByIdentifier, listPendingDsarRequests, resolveDsarRequest, isValidRequestType, normalizeIdentifier as normalizeDsarIdentifier } from './modules/dsar-store.js';
 import { HEALTH_CARD_HTML } from './modules/health-card-page.js';
+import { buildComplianceChecklist, isValidJurisdiction, isValidDataCategory } from './modules/compliance-rules.js';
+import { complianceCheckPageHtml } from './modules/compliance-check-page.js';
 
 const CONSENT_SCOPE = 'cross_venture_data_sharing';
 
@@ -923,6 +925,48 @@ export default {
       const result = await resolveDsarRequest(env, id, { status, resolutionNote });
       console.log(`[consenta.cc dsar admin] ${status} id=${id} identifier=${existing.identifier}`);
       return json({ resolved: true, request: result });
+    }
+
+    // GET /compliance-check - the first real self-serve surface for this
+    // venture's actual pitched core product (a rules engine tied to named
+    // jurisdictions), not another adjacent utility. See
+    // modules/compliance-rules.js's header comment for scope/discipline.
+    if (method === 'GET' && pathname === '/compliance-check') {
+      return new Response(complianceCheckPageHtml(), {
+        status: 200,
+        headers: { 'Content-Type': 'text/html; charset=utf-8' },
+      });
+    }
+
+    // POST /api/v1/compliance-check - static, deterministic checklist
+    // lookup (see buildComplianceChecklist). No D1, no LLM, no invented
+    // legal conclusions - only filtering/annotating the static tables in
+    // modules/compliance-rules.js by the caller's own selections.
+    if (method === 'POST' && pathname === '/api/v1/compliance-check') {
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return err('Invalid JSON body', 'INVALID_INPUT');
+      }
+      const jurisdictions = Array.isArray(body?.jurisdictions) ? body.jurisdictions : [];
+      const dataCategories = Array.isArray(body?.dataCategories) ? body.dataCategories : [];
+      if (jurisdictions.length === 0) {
+        return err('Required: jurisdictions (non-empty array)', 'INVALID_INPUT');
+      }
+      const invalidJurisdiction = jurisdictions.find((j) => !isValidJurisdiction(j));
+      if (invalidJurisdiction) {
+        return err(`Unknown jurisdiction: ${invalidJurisdiction}`, 'INVALID_INPUT');
+      }
+      const invalidCategory = dataCategories.find((c) => !isValidDataCategory(c));
+      if (invalidCategory) {
+        return err(`Unknown data category: ${invalidCategory}`, 'INVALID_INPUT');
+      }
+      const checklist = buildComplianceChecklist({ jurisdictions, dataCategories });
+      return json({
+        checklist,
+        disclaimer: 'Not legal advice. General-awareness reference checklist only, not exhaustive, not a substitute for qualified counsel.',
+      });
     }
 
     return err('Not found', 'NOT_FOUND', 404);
