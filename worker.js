@@ -52,6 +52,7 @@ import { createDsarRequest, getDsarRequest, listDsarRequestsByIdentifier, listPe
 import { HEALTH_CARD_HTML } from './modules/health-card-page.js';
 import { buildComplianceChecklist, isValidJurisdiction, isValidDataCategory } from './modules/compliance-rules.js';
 import { complianceCheckPageHtml } from './modules/compliance-check-page.js';
+import { renderPolicyPage } from './modules/policy-page.js';
 
 const CONSENT_SCOPE = 'cross_venture_data_sharing';
 
@@ -537,6 +538,24 @@ export default {
 
     if (method === 'GET' && pathname === '/api/v1/health') {
       return json({ status: 'ok', product: 'consenta-cc-suppressions', timestamp: Date.now() });
+    }
+
+    // GET /policy/:venture/:type - real privacy policy / terms of service
+    // pages for conglomerate ventures. Shared infrastructure, not a
+    // per-venture copy-paste: weylandai.com is the first real entry (see
+    // modules/policy-page.js's VENTURE_POLICIES registry for why it was
+    // built here rather than as static text on weylandai.com itself -
+    // short version: it had neither document anywhere, and the real
+    // DSAR system this venture already runs is the actual rights-request
+    // mechanism these pages link to, not a dead mailto).
+    {
+      const policyMatch = pathname.match(/^\/policy\/([^/]+)\/(privacy|terms)$/);
+      if (method === 'GET' && policyMatch) {
+        const [, ventureSlug, policyType] = policyMatch;
+        const html = renderPolicyPage(decodeURIComponent(ventureSlug), policyType);
+        if (!html) return err('No policy found for that venture', 'NOT_FOUND', 404);
+        return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+      }
     }
 
     // POST /api/v1/suppressions - record (upsert) a suppression.

@@ -19,7 +19,8 @@ routes = [
   { pattern = "consenta.cc/admin/dsar*", zone_name = "consenta.cc" },
   { pattern = "consenta.cc/health-card*", zone_name = "consenta.cc" },
   { pattern = "consenta.cc/compliance-check*", zone_name = "consenta.cc" },
-  { pattern = "consenta.cc/api/v1/compliance-check*", zone_name = "consenta.cc" }
+  { pattern = "consenta.cc/api/v1/compliance-check*", zone_name = "consenta.cc" },
+  { pattern = "consenta.cc/policy/*", zone_name = "consenta.cc" }
 ]
 
 [[d1_databases]]
